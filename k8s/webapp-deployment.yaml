@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp
+  namespace: alamy_assignment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: webapp
+  template:
+    metadata:
+      labels:
+        app: webapp
+    spec:
+      containers:
+      - name: webapp
+        image: IMAGE_PLACEHOLDER_REPLACE_ME
+        ports:
+        - containerPort: 80
+        resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-svc
+  namespace: alamy_assignment
+spec:
+  selector:
+    app: webapp
+  ports:
+  - port: 80
+    targetPort: 80

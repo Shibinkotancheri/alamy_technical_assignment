@@ -1,0 +1,36 @@
+- name: Deploy k8s manifests to EKS (ALB + Prometheus + Grafana)
+  hosts: local
+  connection: local
+  vars:
+    kubeconfig_path: ./kubeconfig
+  tasks:
+    - name: write kubeconfig to disk if provided
+      copy:
+        dest: "{{ kubeconfig_path }}"
+        content: "{{ lookup('env','KUBECONFIG_CONTENT') | default('') }}"
+        mode: 0600
+      when: lookup('env','KUBECONFIG_CONTENT', '') != ''
+
+    - name: apply namespace
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('file','../../k8s/namespace.yaml') }}"
+        kubeconfig: "{{ kubeconfig_path }}"
+
+    - name: apply webapp manifests (service + deployment + ingress)
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('file','../../k8s/webapp-deployment.yaml') }}"
+        kubeconfig: "{{ kubeconfig_path }}"
+
+    - name: apply prometheus manifests
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('file','../../k8s/prometheus-deployment.yaml') }}"
+        kubeconfig: "{{ kubeconfig_path }}"
+
+    - name: apply grafana manifests
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('file','../../k8s/grafana-deployment.yaml') }}"
+        kubeconfig: "{{ kubeconfig_path }}"

@@ -1,0 +1,84 @@
+name: Build-Push-Deploy
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+  TFSTATE_BUCKET: ${{ secrets.TFSTATE_BUCKET }}
+  TFSTATE_LOCK_TABLE: ${{ secrets.TFSTATE_LOCK_TABLE }}
+  TF_WORKSPACE: ${{ secrets.TF_WORKSPACE }}
+
+jobs:
+  build_push_deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/GitHubActionsDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init -backend-config="bucket=${{ env.TFSTATE_BUCKET }}" \
+                              -backend-config="key=observability/${{ env.TF_WORKSPACE }}.tfstate" \
+                              -backend-config="region=${{ env.AWS_REGION }}" \
+                              -backend-config="dynamodb_table=${{ env.TFSTATE_LOCK_TABLE }}"
+
+      - name: Select/Create Terraform Workspace
+        working-directory: terraform
+        run: terraform workspace select ${{ env.TF_WORKSPACE }} || terraform workspace new ${{ env.TF_WORKSPACE }}
+
+      - name: Terraform Plan
+        working-directory: terraform
+        run: terraform plan -var "region=${{ env.AWS_REGION }}" \
+                             -var "cluster_name=${{ env.EKS_CLUSTER_NAME }}" \
+                             -var "aws_account_id=${{ env.AWS_ACCOUNT_ID }}"
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve -var "region=${{ env.AWS_REGION }}" \
+                                               -var "cluster_name=${{ env.EKS_CLUSTER_NAME }}" \
+                                               -var "aws_account_id=${{ env.AWS_ACCOUNT_ID }}"
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image to ECR
+        run: |
+          REPO_URI=$(terraform -chdir=terraform output -raw ecr_repository_url)
+          IMAGE_URI=${REPO_URI}:latest
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+          docker build -t $IMAGE_URI ./webapp
+          docker push $IMAGE_URI
+
+      - name: Deploy Kubernetes Manifests
+        env:
+          IMAGE_URI: ${{ env.IMAGE_URI }}
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+          sed -i "s|IMAGE_PLACEHOLDER_REPLACE_ME|${IMAGE_URI}|g" k8s/webapp-deployment.yaml
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/webapp-deployment.yaml
+          kubectl apply -f k8s/webapp-ingress.yaml
+          kubectl apply -f k8s/prometheus-deployment.yaml
+          kubectl apply -f k8s/grafana-deployment.yaml
+
+      - name: Run smoke-test
+        run: |
+          chmod +x ./scripts/smoke-test.sh
+          ./scripts/smoke-test.sh
